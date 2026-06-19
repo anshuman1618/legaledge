@@ -1,0 +1,478 @@
+// LegalEdge AI - Database Schema
+// PostgreSQL with strict security measures
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ==================== USER & AUTHENTICATION ====================
+
+enum UserRole {
+  ADVOCATE
+  SENIOR_ADVOCATE
+  PARALEGAL
+  ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  PENDING_VERIFICATION
+}
+
+model User {
+  id                    String      @id @default(uuid())
+  email                 String      @unique
+  passwordHash          String      @map("password_hash")
+  firstName             String      @map("first_name")
+  lastName              String      @map("last_name")
+  barCouncilNumber      String?     @unique @map("bar_council_number")
+  enrollmentNumber      String?     @map("enrollment_number")
+  phone                 String?
+  role                  UserRole    @default(ADVOCATE)
+  status                UserStatus  @default(PENDING_VERIFICATION)
+  encryptedData         String?     @map("encrypted_data") // AES-256-GCM encrypted sensitive fields
+  
+  // Security tracking
+  failedLoginAttempts   Int         @default(0) @map("failed_login_attempts")
+  lockedUntil           DateTime?   @map("locked_until")
+  lastLoginAt           DateTime?   @map("last_login_at")
+  lastLoginIp           String?     @map("last_login_ip")
+  passwordChangedAt     DateTime    @default(now()) @map("password_changed_at")
+  
+  createdAt             DateTime    @default(now()) @map("created_at")
+  updatedAt             DateTime    @updatedAt @map("updated_at")
+  
+  // Relations
+  sessions              Session[]
+  cases                 Case[]
+  drafts                Draft[]
+  filingTrackers        FilingTracker[]
+  auditLogs             AuditLog[]
+
+  @@index([email])
+  @@index([barCouncilNumber])
+  @@map("users")
+}
+
+model Session {
+  id              String    @id @default(uuid())
+  userId          String    @map("user_id")
+  refreshToken    String    @unique @map("refresh_token")
+  userAgent       String?   @map("user_agent")
+  ipAddress       String?   @map("ip_address")
+  expiresAt       DateTime  @map("expires_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  revokedAt       DateTime? @map("revoked_at")
+  
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([refreshToken])
+  @@map("sessions")
+}
+
+// ==================== LEGAL DATABASE ====================
+
+enum LegalActType {
+  IPC
+  CRPC
+  CPC
+  CONSTITUTION
+  RTI_ACT
+  EVIDENCE_ACT
+  BNS
+  BNSS
+  DV_ACT
+  CONSUMER_PROTECTION
+  MOTOR_VEHICLES
+  IT_ACT
+  OTHER
+}
+
+enum SectionType {
+  SUBSTANTIVE
+  PROCEDURAL
+}
+
+model LegalSection {
+  id                String        @id @default(uuid())
+  actType           LegalActType  @map("act_type")
+  sectionNumber     String        @map("section_number")
+  title             String
+  description       String        @db.Text
+  ingredients       Json          // Array of ingredient strings
+  punishment        String?       @db.Text
+  sectionType       SectionType   @map("section_type")
+  category          String
+  relatedSections   String[]      @map("related_sections")
+  
+  isActive          Boolean       @default(true) @map("is_active")
+  effectiveFrom     DateTime?     @map("effective_from")
+  effectiveTo       DateTime?     @map("effective_to")
+  
+  createdAt         DateTime      @default(now()) @map("created_at")
+  updatedAt         DateTime      @updatedAt @map("updated_at")
+  
+  // Relations
+  caseLaws          CaseLaw[]
+  situationMappings SituationSectionMapping[]
+
+  @@unique([actType, sectionNumber])
+  @@index([actType])
+  @@index([sectionNumber])
+  @@index([title])
+  @@map("legal_sections")
+}
+
+model CaseLaw {
+  id              String        @id @default(uuid())
+  sectionId       String        @map("section_id")
+  caseName        String        @map("case_name")
+  citation        String
+  year            Int
+  court           String
+  summary         String        @db.Text
+  ratio           String?       @db.Text
+  relevance       String?
+  fullText        String?       @db.Text @map("full_text")
+  
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
+  
+  section         LegalSection  @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+
+  @@index([sectionId])
+  @@index([citation])
+  @@index([caseName])
+  @@map("case_laws")
+}
+
+// ==================== SITUATION MAPPING ====================
+
+model Situation {
+  id                    String        @id @default(uuid())
+  name                  String        @unique
+  description           String        @db.Text
+  icon                  String
+  competentAuthorities  String[]      @map("competent_authorities")
+  futureApplications    Json          @map("future_applications")
+  recommendedDrafts     String[]      @map("recommended_drafts")
+  
+  createdAt             DateTime      @default(now()) @map("created_at")
+  updatedAt             DateTime      @updatedAt @map("updated_at")
+  
+  sectionMappings       SituationSectionMapping[]
+
+  @@map("situations")
+}
+
+model SituationSectionMapping {
+  id            String        @id @default(uuid())
+  situationId   String        @map("situation_id")
+  sectionId     String        @map("section_id")
+  sectionType   SectionType   @map("section_type")
+  description   String?
+  
+  situation     Situation     @relation(fields: [situationId], references: [id], onDelete: Cascade)
+  section       LegalSection  @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+
+  @@unique([situationId, sectionId])
+  @@map("situation_section_mappings")
+}
+
+// ==================== JURISDICTION ====================
+
+enum JurisdictionType {
+  POLICE_STATION
+  COURT
+  TRIBUNAL
+  COMMISSION
+}
+
+model Jurisdiction {
+  id                String            @id @default(uuid())
+  type              JurisdictionType
+  name              String
+  address           String            @db.Text
+  jurisdictionArea  String            @db.Text @map("jurisdiction_area")
+  competentMatters  String[]          @map("competent_matters")
+  state             String
+  district          String
+  city              String?
+  pincode           String?
+  latitude          Float?
+  longitude         Float?
+  contactPhone      String?           @map("contact_phone")
+  contactEmail      String?           @map("contact_email")
+  
+  isActive          Boolean           @default(true) @map("is_active")
+  createdAt         DateTime          @default(now()) @map("created_at")
+  updatedAt         DateTime          @updatedAt @map("updated_at")
+
+  @@index([type])
+  @@index([state, district])
+  @@index([name])
+  @@map("jurisdictions")
+}
+
+// ==================== GOVERNMENT DEPARTMENTS ====================
+
+model Department {
+  id              String        @id @default(uuid())
+  name            String        @unique
+  ministry        String
+  functions       String[]
+  relevantActs    String[]      @map("relevant_acts")
+  contactInfo     String?       @map("contact_info")
+  
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
+  
+  officers        Officer[]
+  rtiMatrix       RTIMatrix?
+
+  @@map("departments")
+}
+
+model Officer {
+  id                  String      @id @default(uuid())
+  departmentId        String      @map("department_id")
+  designation         String
+  role                String
+  rank                Int
+  powers              String[]
+  appointedUnder      String      @map("appointed_under")
+  
+  createdAt           DateTime    @default(now()) @map("created_at")
+  updatedAt           DateTime    @updatedAt @map("updated_at")
+  
+  department          Department  @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+
+  @@index([departmentId])
+  @@map("officers")
+}
+
+model RTIMatrix {
+  id                        String      @id @default(uuid())
+  departmentId              String      @unique @map("department_id")
+  publicInfoOfficer         String      @map("public_info_officer")
+  firstAppellateAuthority   String      @map("first_appellate_authority")
+  processingPeriodDays      Int         @default(30) @map("processing_period_days")
+  
+  department                Department  @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+
+  @@map("rti_matrices")
+}
+
+// ==================== CASE MANAGEMENT ====================
+
+enum CaseStatus {
+  ACTIVE
+  PENDING_HEARING
+  DISPOSED
+  STAYED
+  TRANSFERRED
+  CLOSED
+}
+
+enum CasePriority {
+  URGENT
+  HIGH
+  MEDIUM
+  LOW
+}
+
+model Case {
+  id                  String        @id @default(uuid())
+  userId              String        @map("user_id")
+  
+  caseNumber          String        @map("case_number")
+  caseTitle           String        @map("case_title")
+  courtName           String        @map("court_name")
+  caseType            String        @map("case_type")
+  
+  clientName          String        @map("client_name")
+  clientEncrypted     String?       @map("client_encrypted") // AES-256-GCM encrypted client details
+  oppositionName      String?       @map("opposition_name")
+  oppositionAdvocate  String?       @map("opposition_advocate")
+  
+  filingDate          DateTime?     @map("filing_date")
+  nextHearingDate     DateTime?     @map("next_hearing_date")
+  lastHearingDate     DateTime?     @map("last_hearing_date")
+  
+  status              CaseStatus    @default(ACTIVE)
+  priority            CasePriority  @default(MEDIUM)
+  stage               String?
+  
+  notes               String?       @db.Text
+  notesEncrypted      String?       @map("notes_encrypted") // AES-256-GCM encrypted notes
+  
+  createdAt           DateTime      @default(now()) @map("created_at")
+  updatedAt           DateTime      @updatedAt @map("updated_at")
+  
+  user                User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  hearings            Hearing[]
+  filingTrackers      FilingTracker[]
+
+  @@index([userId])
+  @@index([caseNumber])
+  @@index([status])
+  @@index([nextHearingDate])
+  @@map("cases")
+}
+
+model Hearing {
+  id              String    @id @default(uuid())
+  caseId          String    @map("case_id")
+  hearingDate     DateTime  @map("hearing_date")
+  bench           String?
+  purpose         String?
+  outcome         String?   @db.Text
+  nextSteps       String?   @db.Text @map("next_steps")
+  orderPassed     String?   @db.Text @map("order_passed")
+  
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+  
+  case            Case      @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([caseId])
+  @@index([hearingDate])
+  @@map("hearings")
+}
+
+// ==================== DRAFT MANAGEMENT ====================
+
+enum DraftType {
+  LEGAL_NOTICE
+  RTI_APPLICATION
+  RTI_FIRST_APPEAL
+  RTI_COMPLAINT
+  BAIL_APPLICATION
+  ANTICIPATORY_BAIL
+  WRIT_PETITION
+  CRIMINAL_COMPLAINT
+  CONSUMER_COMPLAINT
+  DIVORCE_PETITION
+  POLICE_COMPLAINT
+  CIVIL_SUIT
+  OTHER
+}
+
+enum DraftStatus {
+  DRAFT
+  FINALIZED
+  SENT
+  ARCHIVED
+}
+
+model Draft {
+  id              String      @id @default(uuid())
+  userId          String      @map("user_id")
+  caseId          String?     @map("case_id")
+  
+  type            DraftType
+  title           String
+  content         String      @db.Text
+  formData        Json?       @map("form_data")
+  
+  status          DraftStatus @default(DRAFT)
+  version         Int         @default(1)
+  
+  createdAt       DateTime    @default(now()) @map("created_at")
+  updatedAt       DateTime    @updatedAt @map("updated_at")
+  
+  user            User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([type])
+  @@index([status])
+  @@map("drafts")
+}
+
+// ==================== FILING TRACKER ====================
+
+enum FilingStatus {
+  PENDING
+  UPCOMING
+  OVERDUE
+  FILED
+  CANCELLED
+}
+
+enum FilingPriority {
+  HIGH
+  MEDIUM
+  LOW
+}
+
+model FilingTracker {
+  id                String          @id @default(uuid())
+  userId            String          @map("user_id")
+  caseId            String?         @map("case_id")
+  
+  applicationType   String          @map("application_type")
+  description       String?         @db.Text
+  deadline          DateTime
+  court             String?
+  notes             String?         @db.Text
+  
+  status            FilingStatus    @default(PENDING)
+  priority          FilingPriority  @default(MEDIUM)
+  
+  filedAt           DateTime?       @map("filed_at")
+  reminderSent      Boolean         @default(false) @map("reminder_sent")
+  
+  createdAt         DateTime        @default(now()) @map("created_at")
+  updatedAt         DateTime        @updatedAt @map("updated_at")
+  
+  user              User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  case              Case?           @relation(fields: [caseId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([deadline])
+  @@index([status])
+  @@map("filing_trackers")
+}
+
+// ==================== AUDIT LOGGING ====================
+
+enum AuditAction {
+  CREATE
+  READ
+  UPDATE
+  DELETE
+  LOGIN
+  LOGOUT
+  FAILED_LOGIN
+  PASSWORD_CHANGE
+  EXPORT
+  DOWNLOAD
+}
+
+model AuditLog {
+  id            String      @id @default(uuid())
+  userId        String?     @map("user_id")
+  action        AuditAction
+  resourceType  String      @map("resource_type")
+  resourceId    String?     @map("resource_id")
+  ipAddress     String?     @map("ip_address")
+  userAgent     String?     @map("user_agent")
+  metadata      Json?
+  
+  createdAt     DateTime    @default(now()) @map("created_at")
+  
+  user          User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([action])
+  @@index([resourceType])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
